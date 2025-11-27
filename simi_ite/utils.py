@@ -197,3 +197,290 @@ def metrics_tree(
         "auuc": round(auuc[0], 5),
         "rauuc": round(auuc[1], 5)
     }
+
+import torch
+import numpy as np
+from simi_ite.propensity import *
+import math
+from scipy.spatial.distance import cdist
+from scipy.stats import entropy
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+import random
+from scipy import sparse
+import argparse
+
+# 模拟 TensorFlow flags 功能，实际使用通常结合 argparse
+class Flags:
+    def __init__(self):
+        self.sparse = 0  # 默认值，需根据实际情况调整
+    
+    def flag_values_dict(self):
+        return self.__dict__
+
+FLAGS = Flags()
+# 如果需要从命令行解析参数，可以使用 argparse 替换上面的 Flags 类
+
+SQRT_CONST = 1e-10
+
+def validation_split(D_exp, val_fraction):
+    """ Construct a train/validation split """
+    n = D_exp['x'].shape[0]
+
+    if val_fraction > 0:
+        n_valid = int(val_fraction*n)
+        n_train = n-n_valid
+        I = np.random.permutation(range(0,n))
+        I_train = I[:n_train]
+        I_valid = I[n_train:]
+    else:
+        I_train = range(n)
+        I_valid = []
+
+    return I_train, I_valid
+
+def validation_split_equal(D_exp, val_fraction):
+    """ Construct a train/validation split """
+    n = D_exp.shape[0]
+
+    if val_fraction > 0:
+        n_valid = int(val_fraction*n)
+        n_train = n-n_valid
+        I = np.random.permutation(range(0,n))
+        I_train = I[:n_train]
+        I_valid = I[n_train:]
+    else:
+        I_train = range(n)
+        I_valid = []
+
+    return I_train, I_valid
+
+def log(logfile, str_msg):
+    """ Log a string in a file """
+    with open(logfile, 'a') as f:
+        f.write(str_msg + '\n')
+    print(str_msg)
+
+def save_config(fname):
+    """ Save configuration """
+    # 假设 FLAGS 是一个 argparse.Namespace 或者上面的 Flags 类实例
+    try:
+        flagdict = FLAGS.flag_values_dict()
+    except AttributeError:
+        # 如果使用的是 argparse
+        flagdict = vars(FLAGS)
+        
+    s = '\n'.join(['%s: %s' % (k, str(flagdict[k])) for k in sorted(flagdict.keys())])
+    with open(fname, 'w') as f:
+        f.write(s)
+
+def load_data(fname):
+    """ Load data set """
+    if fname[-3:] == 'npz':
+        data_in = np.load(fname)
+        data = {'x': data_in['x'], 't': data_in['t'], 'yf': data_in['yf']}
+        try:
+            data['ycf'] = data_in['ycf']
+        except:
+            data['ycf'] = None
+    else:
+        if FLAGS.sparse > 0:
+            data_in = np.loadtxt(open(fname+'.y', "rb"), delimiter=",")
+            x = load_sparse(fname+'.x')
+        else:
+            data_in = np.loadtxt(open(fname, "rb"), delimiter=",")
+            x = data_in[:, 5:]
+
+        data['x'] = x
+        data['t'] = data_in[:, 0:1]
+        data['yf'] = data_in[:, 1:2]
+        data['ycf'] = data_in[:, 2:3]
+
+    data['HAVE_TRUTH'] = not data['ycf'] is None
+
+    data['dim'] = data['x'].shape[1]
+    data['n'] = data['x'].shape[0]
+
+    return data
+
+def load_sparse(fname):
+    """ Load sparse data set """
+    E = np.loadtxt(open(fname, "rb"), delimiter=",")
+    H = E[0, :]
+    n = int(H[0])
+    d = int(H[1])
+    E = E[1:, :]
+    S = sparse.coo_matrix((E[:, 2], (E[:, 0]-1, E[:, 1]-1)), shape=(n, d))
+    S = S.todense() 
+
+    return S
+
+# 辅助函数
+def safe_sqrt(x, lbound=SQRT_CONST):
+    ''' Numerically safe version of sqrt  数值安全的开平方根函数。'''
+    return torch.sqrt(torch.clamp(x, min=lbound, max=float('inf')))
+
+def pdist2sq(X, Y):
+    """ Computes the squared Euclidean distance between all pairs x in X, y in Y  计算矩阵 X 和矩阵 Y 之间所有点对的平方欧几里得距离。"""
+    # C = -2 * X * Y.T
+    C = -2 * torch.matmul(X, Y.t())
+    nx = torch.sum(torch.square(X), dim=1, keepdim=True)
+    ny = torch.sum(torch.square(Y), dim=1, keepdim=True)
+    D = (C + ny.t()) + nx
+    return D
+
+def pdist2(X, Y):
+    """ Returns the pairwise distance matrix 计算矩阵 X 和矩阵 Y 之间所有点对的标准欧几里得距离。 """
+    return safe_sqrt(pdist2sq(X, Y))
+
+# 用于数据处理的函数
+def simplex_project(x, k):
+    """ Projects a vector x onto the k-simplex """
+    d = x.shape[0]
+    mu = np.sort(x, axis=0)[::-1]
+    nu = (np.cumsum(mu)-k)/range(1, d+1)
+    I = [i for i in range(0, d) if mu[i]>nu[i]]
+    theta = nu[I[-1]]
+    w = np.maximum(x-theta, 0)
+    return w
+
+def sigmoid(x):
+    return 1 / float(1 + math.exp(-x))
+
+# 计算相似度得分
+def similarity_score(s_i, s_j, mode='linear'):
+    # if mode == 'sigmoid':
+    #     _mid = (s_i + s_j)/float(2)
+    #     _dis = abs(s_j - s_i)/float(2)
+    #     score = 2*sigmoid(abs(_mid-0.5)) - 3*sigmoid(_dis)+1
+    if mode == 'linear':
+        _mid = (s_i + s_j) / float(2)
+        _dis = abs(s_j - s_i) / float(2)
+        score = (1.5 * abs(_mid - 0.5) - 2 * _dis + 1)/float(2)
+    return score
+
+def propensity_dist(x, y):
+    s_x = load_propensity_score('./tmp/propensity_model.sav', x.reshape(1, x.shape[0]))
+    s_y = load_propensity_score('./tmp/propensity_model.sav', y.reshape(1, y.shape[0]))
+
+    edu_dist = np.power(np.linalg.norm(x-y), 2)
+    score = np.exp(-1*(1-similarity_score(s_x, s_y)) * edu_dist)
+    return score
+
+def square_dist(x, y):
+    dist = np.power(np.linalg.norm(x-y), 2)
+    return dist
+
+# 用于计算“相似度误差”
+def similarity_error_cal(x, h_rep_norm): #计算原始空间 $x$ 和 隐层空间 $h$ 之间的结构差异（KL 散度）。
+    distance_matrix_x = cdist(x, x, propensity_dist)
+    distance_matrix_h = cdist(h_rep_norm, h_rep_norm, "sqeuclidean")
+    dim = distance_matrix_h.shape[0]
+    il2 = np.tril_indices(dim, -1)
+    p_x = distance_matrix_x[il2]
+    p_x = p_x/sum(p_x)
+    p_h = distance_matrix_h[il2]
+    p_h = p_h / sum(p_h)
+    print(p_x)
+    print(p_h)
+    k_l = entropy(p_x, p_h)
+    return k_l
+
+# 用于 PDDM/SITe 损失
+def row_wise_dist(x):#高效计算矩阵 $x$ 内部样本两两之间的 平方欧几里得距离。
+    r = torch.sum(x * x, dim=1)
+    # turn r into column vector
+    r = torch.reshape(r, [-1, 1])
+    D = r - 2 * torch.matmul(x, x.t()) + r.t()
+    return D
+
+def get_simi_ground(x, file_dir='./simi_ite/tmp/propensity_model.sav'):#构建 “倾向性相似度”矩阵，作为训练的 Ground Truth（标准答案）。
+    x_propensity_score = load_propensity_score(file_dir, x)
+    n_train = x.shape[0]
+    s_x_matrix = np.ones([n_train, n_train])
+    for i in range(n_train):
+        for j in range(n_train):
+            s_x_matrix[i, j] = similarity_score(x_propensity_score[i], x_propensity_score[j])
+    return s_x_matrix
+
+def find_nearest_point(x, p):#在数组 $x$ 中，找到与数值 $p$ 最接近的另一个点的索引
+    diff = np.abs(x-p)
+    diff_1 = diff[diff>0]
+    min_val = np.min(diff_1)
+    I_diff = np.where(diff == min_val)[0]
+    I_diff = I_diff[0]
+    if I_diff.size > 1:
+        I_diff = I_diff[0]
+    return I_diff
+
+def find_three_pairs(x, t, propensity_dir='./simi_ite/tmp/propensity_model.sav'):
+    try:
+        x_return = np.ones([6, x.shape[1]])
+        I_x_return = np.zeros(6, dtype=int)
+        x_propensity_score = load_propensity_score(propensity_dir, x)
+        I_t = np.where(t > 0)[0]
+        I_c = np.where(t < 1)[0]
+
+        prop_t = x_propensity_score[I_t]
+        prop_c = x_propensity_score[I_c]
+        
+        x_t = x[I_t]
+        x_c = x[I_c]
+        
+        # find x_i, x_j
+        index_t, index_c = find_middle_pair(prop_t, prop_c)
+        # find x_k, x_l
+        index_k = np.argmax(np.abs(prop_c - prop_t[index_t]))
+        index_l = find_nearest_point(prop_c, prop_c[index_k])
+
+        # find x_n, x_m
+        index_m = np.argmax(np.abs(prop_t - prop_c[index_c]))
+        index_n = find_nearest_point(prop_t, prop_t[index_m,])
+        
+        x_return[0, :] = x_t[index_t, :]
+        x_return[1, :] = x_c[index_c, :]
+        x_return[2, :] = x_c[index_k, :]
+        x_return[3, :] = x_c[index_l, :]
+        x_return[4, :] = x_t[index_m, :]
+        x_return[5, :] = x_t[index_n, :]
+        I_x_return[0] = int(I_t[index_t])
+        I_x_return[1] = int(I_c[index_c])
+        I_x_return[2] = int(I_c[index_k])
+        I_x_return[3] = int(I_c[index_l])
+        I_x_return[4] = int(I_t[index_m])
+        I_x_return[5] = int(I_t[index_n])
+    except:
+        x_return = x[0:6, :]
+        I_x_return = np.array([0, 1, 2, 3, 4, 5])
+        print('some error happens here!')
+
+    return x_return, I_x_return
+
+def find_middle_pair(x, y):
+    min_val = np.abs(x[0]-0.5) + np.abs(y[0]-0.5)
+    index_1 = 0
+    index_2 = 0
+    for i in range(x.shape[0]):
+        for j in range(y.shape[0]):
+            value = np.abs(x[i]-0.5) + np.abs(y[j]-0.5)
+            if value < min_val:
+                min_val = value
+                index_1 = i
+                index_2 = j
+    return index_1, index_2
+
+def get_three_pair_simi(three_pairs, file_dir='./simi_ite/tmp/propensity_model.sav'):
+    three_pairs_simi = get_simi_ground(three_pairs, file_dir)
+    simi = np.ones([5, 1])
+    '''
+    S(k, l), S(m, n), S(k, l), S(i, k), S(j, m)
+    '''
+    simi[0, 0] = three_pairs_simi[2, 3]
+    simi[1, 0] = three_pairs_simi[4, 5]
+    simi[2, 0] = three_pairs_simi[2, 4]
+    simi[3, 0] = three_pairs_simi[0, 2]
+    simi[4, 0] = three_pairs_simi[1, 4]
+    return simi
+
+if __name__ == "__main__":
+    pass
