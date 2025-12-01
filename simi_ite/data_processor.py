@@ -9,6 +9,43 @@ import numpy as np
 
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 
+class MyDataset(Dataset):
+
+    def __init__(self, path, mask=0):
+        # super().__init__(path, params)
+        self.data = np.loadtxt(path, delimiter=',', dtype=np.float32)
+        self.x_dim = self.data.shape[-1] - 3
+        self.x_dim_start = int(mask*self.x_dim)
+        self.x_dim -= self.x_dim_start
+        # self.scaler = StandardScaler()
+        # self.data = self.scaler.fit_transform(self.data)
+
+    def __getitem__(self, index):
+
+        return self.data[index, self.x_dim_start:]
+
+    def __len__(self):
+
+        return len(self.data)
+
+    def get_sampler(self, treat_weight=1):
+
+        t = self.data[:, -3].astype(np.int16)
+        count = Counter(t)
+        class_count = np.array([count[0], count[1]*treat_weight])
+        weight = 1. / class_count
+        samples_weight = torch.tensor([weight[item] for item in t])
+        sampler = WeightedRandomSampler(
+            samples_weight,
+            len(samples_weight),
+            replacement=True)
+
+        return sampler
+
+
+
+
+
 
 
 def TEP_processor(random_state=1):
@@ -90,24 +127,34 @@ def TEP_processor(random_state=1):
     df_fault_train = df_fault_train.rename(columns = lambda x:X_dict[x.upper()] if x.upper() in X_dict.keys()  else x)
     df_normal_test= df_normal_test.rename(columns = lambda x:X_dict[x.upper()] if x.upper() in X_dict.keys()  else x)
     df_fault_test = df_fault_test.rename(columns = lambda x:X_dict[x.upper()] if x.upper() in X_dict.keys()  else x)
-
-    eval_test_data = pd.concat([df_normal_test, df_fault_test[df_fault_test['faultNumber']==1]], axis=0)
-    eval_test_data['y1'] = eval_test_data['Composition_of_G_product']
-    eval_test_data['y2'] = eval_test_data['Composition_of_H_product']
-    eval_test_data['T'] = np.where((eval_test_data['faultNumber'] == 1) & (eval_test_data['sample'] > 180), 1, 0)
+    # Create training set
     train_data = pd.concat([df_normal_train, df_fault_train[df_fault_train['faultNumber']==1]], axis=0)
+    train_data['T'] = np.where((train_data['faultNumber'] == 1) & (train_data['sample'] > 20), 1, 0)
     train_data['y1'] = train_data['Composition_of_G_product']
     train_data['y2'] = train_data['Composition_of_H_product']
-    train_data['T'] = np.where((train_data['faultNumber'] == 1) & (train_data['sample'] > 20), 1, 0)
+    # Create evaluation and test sets
+    eval_test_data = pd.concat([df_normal_test, df_fault_test[df_fault_test['faultNumber']==1]], axis=0)
+    eval_test_data['T'] = np.where((eval_test_data['faultNumber'] == 1) & (eval_test_data['sample'] > 180), 1, 0)
+    eval_test_data['y1'] = eval_test_data['Composition_of_G_product']
+    eval_test_data['y2'] = eval_test_data['Composition_of_H_product']
+
 
     train_data = train_data.drop(['faultNumber', 'simulationRun', "Composition_of_G_product", "Composition_of_H_product"], axis=1)
     eval_test_data = eval_test_data.drop(['faultNumber', 'simulationRun', "Composition_of_G_product", "Composition_of_H_product"], axis=1)
     train_data = train_data.to_numpy()
     eval_test_data = eval_test_data.to_numpy()
     evaluation_data, test_data = train_test_split(eval_test_data, test_size=0.27, stratify=eval_test_data[:, -1], random_state=random_state)
-    np.savetxt("train_Datasets/TEP/train.csv", train_data, delimiter=",")
-    # np.savetxt("train_Datasets/TEP/traineval.csv", np.concatenate((train_data, evaluation_data), axis=0), delimiter=",")
-    np.savetxt("train_Datasets/TEP/eval.csv", evaluation_data, delimiter=",")
-    np.savetxt("train_Datasets/TEP/test.csv", test_data, delimiter=",")
+    np.savetxt("Datasets/TEP/train.csv", train_data, delimiter=",")
+    np.savetxt("Datasets/TEP/traineval.csv", np.concatenate((train_data, evaluation_data), axis=0), delimiter=",")
+    np.savetxt("Datasets/TEP/eval.csv", evaluation_data, delimiter=",")
+    np.savetxt("Datasets/TEP/test.csv", test_data, delimiter=",")
     print('New TEP train_Data')
     return None
+
+
+
+if __name__ == "__main__":
+
+    # acic2016_processor()
+    # [ihdp_processor(i) for i in range(1,11)]
+    TEP_processor()
