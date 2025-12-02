@@ -69,107 +69,107 @@ class LinearLearner(nn.Module):  # for test
 
 
 
-# class Representation(nn.Module):
-#     """
-#     Representation network for SITE
-#     """
-#     def __init__(self, input_dim, hparams):
+class Representation(nn.Module):
+    """
+    Representation network for SITE
+    """
+    def __init__(self, input_dim, hparams):
 
-#         super(Representation, self).__init__()
-#         self.hparams = hparams
-#         out_backbone = hparams.get('dim_backbone', '32,16').split(',')
-#         in_backbone = [input_dim] + list(map(int, out_backbone))
-#         self.backbone = torch.nn.Sequential()
-#         if hparams.get('varsel', False):
-#             self.feature_gates = nn.Parameter(torch.ones(input_dim) / input_dim)
-#         for i in range(1, len(in_backbone)):
-#             self.backbone.add_module(f"backbone_dense{i}", torch.nn.Linear(in_backbone[i-1], in_backbone[i]))
-#             self.backbone.add_module(f"backbone_relu{i}", torch.nn.ELU())
-#             if self.batch_norm:
-#                 self.backbone.add_module(f"backbone_bn{i}", torch.nn.BatchNorm1d(num_features=in_backbone[i]))
-#         self.backbone.add_module(f"backbone_dropout{i}", torch.nn.Dropout(p=hparams.get('dropout', 0.1)))
+        super(Representation, self).__init__()
+        self.hparams = hparams
+        self.batch_norm = hparams.get('batch_norm', False)
+        out_backbone = hparams.get('dim_backbone', '32,16').split(',')
+        in_backbone = [input_dim] + list(map(int, out_backbone))
+        self.backbone = torch.nn.Sequential()
+        if hparams.get('varsel', False):
+            self.feature_gates = nn.Parameter(torch.ones(input_dim) / input_dim)
+        for i in range(1, len(in_backbone)):
+            self.backbone.add_module(f"backbone_dense{i}", torch.nn.Linear(in_backbone[i-1], in_backbone[i]))
+            self.backbone.add_module(f"backbone_relu{i}", torch.nn.ELU())
+            if self.batch_norm:
+                self.backbone.add_module(f"backbone_bn{i}", torch.nn.BatchNorm1d(num_features=in_backbone[i]))
+        self.backbone.add_module(f"backbone_dropout{i}", torch.nn.Dropout(p=hparams.get('dropout', 0.1)))
 
-#     def forward(self, x):
-#         if self.hparams.get('varsel', False):
-#             x = x * self.feature_gates
+    def forward(self, x):
+        if self.hparams.get('varsel', False):
+            x = x * self.feature_gates
         
-#         rep = self.backbone(x)
+        rep = self.backbone(x)
 
-#         return rep
+        return rep
 
-# class output_head(nn.Module):
-#     """
-#     Outcome head for SITE
-#     """
-#     def __init__(self, input_dim, hparams):
+class output_head(nn.Module):
+    """
+    Outcome head for SITE
+    """
+    def __init__(self, hparams):
 
-#         super(output_head, self).__init__()
-#         self.hparams = hparams
-#         out_backbone = hparams.get('dim_backbone', '32,16').split(',')
-#         out_task = hparams.get('dim_task', '16').split(',')
-#         self.treat_embed = hparams.get('treat_embed', True)
-#         in_backbone = [input_dim] + list(map(int, out_backbone))
-#         in_task = [in_backbone[-1]] + list(map(int, out_task))
-#         if self.treat_embed is True: # 拼接treatment带来的
-#             in_task[0] += 2
+        super(output_head, self).__init__()
+        self.hparams = hparams
+        self.batch_norm = hparams.get('batch_norm', False)
+        out_backbone = hparams.get('dim_backbone', '32,16').split(',')
+        out_task = hparams.get('dim_task', '16').split(',')
+        self.treat_embed = hparams.get('treat_embed', True)
+        out_backbone =list(map(int, out_backbone))
+        in_task = [out_backbone[-1]] + list(map(int, out_task))
+        if self.treat_embed is True: # 拼接treatment带来的
+            in_task[0] += 2
 
-#         self.tower_1 = torch.nn.Sequential()
-#         for i in range(1, len(in_task)):
-#             self.tower_1.add_module(f"tower_dense{i}", torch.nn.Linear(in_task[i-1], in_task[i]))
-#             self.tower_1.add_module(f"tower_relu{i}", torch.nn.ELU())
-#             if self.batch_norm:
-#                 self.tower_1.add_module(f"tower_bn{i}", torch.nn.BatchNorm1d(num_features=in_task[i]))
-#             self.tower_1.add_module(f"tower_dropout{i}", torch.nn.Dropout(p=hparams.get('dropout', 0.1)))
+        self.tower = torch.nn.Sequential()
+        for i in range(1, len(in_task)):
+            self.tower.add_module(f"tower_dense{i}", torch.nn.Linear(in_task[i-1], in_task[i]))
+            self.tower.add_module(f"tower_relu{i}", torch.nn.ELU())
+            if self.batch_norm:
+                self.tower.add_module(f"tower_bn{i}", torch.nn.BatchNorm1d(num_features=in_task[i]))
+            self.tower.add_module(f"tower_dropout{i}", torch.nn.Dropout(p=hparams.get('dropout', 0.1)))
 
-#         self.output_1 = torch.nn.Sequential()
-#         self.output_1.add_module("output_dense", torch.nn.Linear(in_task[-1], 1))
+        self.output = torch.nn.Sequential()
+        self.output.add_module("output_dense", torch.nn.Linear(in_task[-1], 1))
 
-#         self.tower_0 = deepcopy(self.tower_1)
-#         self.output_0 = deepcopy(self.output_1)
+        self.embedding = nn.Embedding(2, 2)
 
-#         self.rep_1, self.rep_0 = None, None
-#         self.out_1, self.out_0 = None, None
-#         self.embedding = nn.Embedding(2, 2)
+    def forward(self, rep: torch.Tensor,x: torch.Tensor):
+        t = x[:, -1]
+        if self.treat_embed is True:
+            t_embed = self.embedding(t.int())
+            rep_t = torch.cat([rep, t_embed], dim=-1)
+        else:
+            rep_t = rep
+        outcome_f = self.output(self.tower(rep_t))
+        return outcome_f
+# 总的网络结构
+class TARNetHead(nn.Module):
+    def __init__(self, input_dim, hparams):
+        super(TARNetHead, self).__init__()
+        self.hparams = hparams
+        out_backbone = hparams.get('dim_backbone', '32,16').split(',')
+        out_task = hparams.get('dim_task', '16').split(',')
+        self.treat_embed = hparams.get('treat_embed', True)
+        in_backbone = [input_dim] + list(map(int, out_backbone))
+        in_task = [in_backbone[-1]] + list(map(int, out_task))
+        if self.treat_embed is True: # 拼接treatment带来的
+            in_task[0] += 2
+        self.rep=Representation(input_dim, hparams)
+        self.head0 = output_head(hparams)
+        self.head1 =  deepcopy(self.head0)
+    
 
-#     def forward(self, x: torch.Tensor):
-#         covariates = x[:, :-1]
-#         t = x[:, -1]
-#         if self.treat_embed is True:
-#             t_embed = self.embedding(t.int())
-#             rep_t = torch.cat([rep, t_embed], dim=-1)
-#         else:
-#             rep_t = rep
 
-#         self.rep_1 = rep[t == 1]
-#         self.rep_0 = rep[t == 0]
+    def forward(self, x: torch.Tensor):
+        covariates = x[:, :-1]
+        t = x[:, -1]
+        rep = self.rep(covariates) 
+        self.rep_1 = rep[t == 1]
+        self.rep_0 = rep[t == 0]
 
-#         self.out_1 = self.output_1(self.tower_1(rep_t))
-#         self.out_0 = self.output_0(self.tower_0(rep_t))
+        self.out_1 = self.head1(rep, x)
+        self.out_0 = self.head0(rep, x)
+        
+        t = t.reshape(-1, 1)
+        output_f = t * self.out_1 + (1 - t) * self.out_0
 
-#         t = t.reshape(-1, 1)
-#         output_f = t * self.out_1 + (1 - t) * self.out_0
-#         return output_f
-# class TARNetHead(nn.Module):
-#     def __init__(self, input_dim):
-#         super().__init__()
-#         out_backbone = config.dim_head_backbone.split(',')
-#         out_task = config.dim_head_task.split(',')
-#         in_backbone = [config.dim_representation] + list(map(int, out_backbone))
-#         in_task = [in_backbone[-1]] + list(map(int, out_task))
+        return output_f
 
-#         self.tower_1 = torch.nn.Sequential()
-#         for i in range(1, len(in_task)):
-#             self.tower_1.add_module(f"tower_dense{i}", torch.nn.Linear(in_task[i-1], in_task[i]))
-#             self.tower_1.add_module(f"tower_relu{i}", torch.nn.ELU())
-#             if config.batch_norm:
-#                 self.tower_1.add_module(f"tower_bn{i}", torch.nn.BatchNorm1d(num_features=in_task[i]))
-#             self.tower_1.add_module(f"tower_dropout{i}", torch.nn.Dropout(p=config.dropout_head))
-
-#         self.output_1 = torch.nn.Sequential()
-#         self.output_1.add_module("output_dense", torch.nn.Linear(in_task[-1], 1))
-
-#         self.tower_0 = deepcopy(self.tower_1)
-#         self.output_0 = deepcopy(self.output_1)
 
 
 class YLearner(nn.Module):
@@ -197,19 +197,19 @@ class YLearner(nn.Module):
         if self.treat_embed is True: # 拼接treatment带来的
             in_task[0] += 2
 
-        self.tower_1 = torch.nn.Sequential()
+        self.tower = torch.nn.Sequential()
         for i in range(1, len(in_task)):
-            self.tower_1.add_module(f"tower_dense{i}", torch.nn.Linear(in_task[i-1], in_task[i]))
-            self.tower_1.add_module(f"tower_relu{i}", torch.nn.ELU())
+            self.tower.add_module(f"tower_dense{i}", torch.nn.Linear(in_task[i-1], in_task[i]))
+            self.tower.add_module(f"tower_relu{i}", torch.nn.ELU())
             if self.batch_norm:
-                self.tower_1.add_module(f"tower_bn{i}", torch.nn.BatchNorm1d(num_features=in_task[i]))
-            self.tower_1.add_module(f"tower_dropout{i}", torch.nn.Dropout(p=hparams.get('dropout', 0.1)))
+                self.tower.add_module(f"tower_bn{i}", torch.nn.BatchNorm1d(num_features=in_task[i]))
+            self.tower.add_module(f"tower_dropout{i}", torch.nn.Dropout(p=hparams.get('dropout', 0.1)))
 
-        self.output_1 = torch.nn.Sequential()
-        self.output_1.add_module("output_dense", torch.nn.Linear(in_task[-1], 1))
+        self.output = torch.nn.Sequential()
+        self.output.add_module("output_dense", torch.nn.Linear(in_task[-1], 1))
 
-        self.tower_0 = deepcopy(self.tower_1)
-        self.output_0 = deepcopy(self.output_1)
+        self.tower_0 = deepcopy(self.tower)
+        self.output_0 = deepcopy(self.output)
 
         self.rep_1, self.rep_0 = None, None
         self.out_1, self.out_0 = None, None
@@ -229,7 +229,7 @@ class YLearner(nn.Module):
         self.rep_1 = rep[t == 1]
         self.rep_0 = rep[t == 0]
 
-        self.out_1 = self.output_1(self.tower_1(rep_t))
+        self.out_1 = self.output(self.tower(rep_t))
         self.out_0 = self.output_0(self.tower_0(rep_t))
 
         t = t.reshape(-1, 1)
@@ -244,7 +244,7 @@ class YLearner(nn.Module):
     #             penalty = penalty + layer.weight.pow(2).sum()
     #     # No penalty on the variable selection gate, matching TensorFlow's behavior.
     #     penalty += self.embedding.weight.pow(2).sum()
-    #     for layer in self.tower_1:
+    #     for layer in self.tower:
     #         if isinstance(layer, nn.Linear):
     #             penalty = penalty + layer.weight.pow(2).sum()
     #     for layer in self.tower_0:
