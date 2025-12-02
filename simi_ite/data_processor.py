@@ -143,7 +143,7 @@ def TEP_processor(random_state=1):
     eval_test_data = eval_test_data.drop(['faultNumber', 'simulationRun', "Composition_of_G_product", "Composition_of_H_product"], axis=1)
     train_data = train_data.to_numpy()
     eval_test_data = eval_test_data.to_numpy()
-    evaluation_data, test_data = train_test_split(eval_test_data, test_size=0.27, stratify=eval_test_data[:, -1], random_state=random_state)
+    evaluation_data, test_data = train_test_split(eval_test_data, test_size=0.27, stratify=eval_test_data[:, -3], random_state=random_state)
     np.savetxt("Datasets/TEP/train.csv", train_data, delimiter=",")
     np.savetxt("Datasets/TEP/traineval.csv", np.concatenate((train_data, evaluation_data), axis=0), delimiter=",")
     np.savetxt("Datasets/TEP/eval.csv", evaluation_data, delimiter=",")

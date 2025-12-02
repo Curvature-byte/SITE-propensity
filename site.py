@@ -80,12 +80,12 @@ class BaseEstimator:
         # if hparams.get('model') == 'tlearner':
         #     self.model = TLearner(train_set.x_dim, hparams).to(self.device)
         # if hparams.get('model') == 'ylearner':
-        self.model = YLearner(train_set.x_dim, hparams).to(self.device)
-
+        # self.model = YLearner(train_set.x_dim, hparams).to(self.device)
+        self.model = TARNetHead(train_set.x_dim, hparams).to(self.device)
+        self.rep_model = self.model.rep
         self.criterion = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=hparams.get('lr', 1e-3), weight_decay=hparams.get('l2_reg', 1e-4))
         self.hparams = hparams
-
         self.epoch = 0
         self.board = board
 
@@ -103,8 +103,9 @@ class BaseEstimator:
                 _x,_xt, _t, _yf, _y1f = data[:, :-3], data[:, :-2], data[:, -3], data[:, [-2]], data[:, -1]
                 _x_similarity_ground = get_simi_ground(_x.detach().cpu().numpy(), propensity_dir='./simi_ite/tmp/propensity_model.sav')
                 three_pairs , three_paris_index = find_three_pairs(_x.detach().cpu().numpy(), _t.detach().cpu().numpy(), _x_similarity_ground)
-
-                _pred_f,three_rep_paris = self.mnodel(_xt, three_pairs)
+                three_pairs = torch.tensor(three_pairs, dtype=torch.float32,device=self.device)
+                _pred_f = self.model(_xt)
+                three_rep_paris = self.rep_model(three_pairs)
                 
                 # Section: loss calculation
                 _loss_fit = self.criterion(_pred_f, _yf)
