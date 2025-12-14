@@ -1,16 +1,17 @@
 # coding=utf-8
 import argparse
-
-import ot
+import numpy as np
+from copy import deepcopy
 import torch.nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import os
-from data_processor import MyDataset
+from simi_ite.data_processor import MyDataset
 from models import *
-from simi_ite.utils import find_three_pairs
-from utils import *
+from simi_ite.utils import find_three_pairs, get_simi_ground, metric_update, get_three_pair_simi, similarity_score
+from simi_ite.pddm_net import compute_pddm_loss, PDDMNetwork
+from simi_ite.propensity import load_propensity_score
 
 
 
@@ -81,8 +82,9 @@ class BaseEstimator:
         #     self.model = TLearner(train_set.x_dim, hparams).to(self.device)
         # if hparams.get('model') == 'ylearner':
         # self.model = YLearner(train_set.x_dim, hparams).to(self.device)
-        self.model = TARNetHead(train_set.x_dim, hparams).to(self.device)
+        self.model = TARNetHead(train_set.x_dim-1, hparams).to(self.device)
         self.rep_model = self.model.rep
+        self.propensity_model = load_propensity_score(model_dir = '.\simi_ite\tmp\propensity_model' ,input_dim = train_set.x_dim-1 ,mode="mlp")
         self.criterion = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=hparams.get('lr', 1e-3), weight_decay=hparams.get('l2_reg', 1e-4))
         self.hparams = hparams
@@ -100,20 +102,25 @@ class BaseEstimator:
             for data in self.train_loader:  # train_loader
                 self.model.zero_grad()
                 data = data.to(self.device)
-                _x,_xt, _t, _yf, _y1f = data[:, :-3], data[:, :-2], data[:, -3], data[:, [-2]], data[:, -1]
-                _x_similarity_ground = get_simi_ground(_x.detach().cpu().numpy(), propensity_dir='./simi_ite/tmp/propensity_model.sav')
-                three_pairs , three_paris_index = find_three_pairs(_x.detach().cpu().numpy(), _t.detach().cpu().numpy(), _x_similarity_ground)
+                _x,_xt, _t, _yf, _y1f = data[:, 1:-3], data[:, 1:-2], data[:, -3], data[:, [-2]], data[:, [-1]]
+                _x_propensity_score, _x_similarity_ground = get_simi_ground(_x.detach().cpu().numpy(),  propensity_model=self.propensity_model)
+                three_pairs , three_paris_index = find_three_pairs(_x.detach().cpu().numpy(), _t.detach().cpu().numpy(), _x_propensity_score)
                 three_pairs = torch.tensor(three_pairs, dtype=torch.float32,device=self.device)
                 _pred_f = self.model(_xt)
                 three_rep_paris = self.rep_model(three_pairs)
                 
                 # Section: loss calculation
                 _loss_fit = self.criterion(_pred_f, _yf)
+                _loss_pddm_model = PDDMNetwork(
+                    dim_in=self.hparams['dim_pddm_in'],
+                    dim_pddm=self.hparams['dim_pddm_hide'],
+                    dim_c=self.hparams['dim_pddm_c'],
+                ).to(self.device)
                 _loss_pddm = 0
                 pddm_indicator = ( epoch > 20 and len(_t.unique()) > 1)
                 if pddm_indicator: # Avoid samples coming from same group
                     _loss_pddm = compute_pddm_loss(
-                        PDDMNetwork,
+                        _loss_pddm_model,
                         three_rep_paris,
                         _x_similarity_ground, three_paris_index
                     ).squeeze()
@@ -235,30 +242,32 @@ if __name__ == "__main__":
     hparams.add_argument('--dim_pddm_in', type=int, default=32)
     hparams.add_argument('--dim_pddm_hide', type=int, default=32)
     hparams.add_argument('--dim_pddm_c', type=int, default=32)
-    hparams.add_argument('--n_rep_layers', type=int, default=2)
-    hparams.add_argument('--n_head_layers', type=int, default=2)
-    hparams.add_argument('--activation', type=str, default='elu')
+    # hparams.add_argument('--n_rep_layers', type=int, default=2)
+    # hparams.add_argument('--n_head_layers', type=int, default=2)
+    # hparams.add_argument('--activation', type=str, default='elu')
     hparams.add_argument('--batchSize', type=int, default=32)
-    hparams.add_argument('--normalization', type=str, default='none')
-    hparams.add_argument('--loss_type', type=str, default='l2')
-    hparams.add_argument('--reweight_sample', type=bool, default=False)
-    hparams.add_argument('--rep_weight_decay', type=bool, default=True)
-    hparams.add_argument('--dropout_rep', type=float, default=0.1)
-    hparams.add_argument('--dropout_head', type=float, default=0.1)
-    hparams.add_argument('--p_lambda', type=float, default=0.0)
-    hparams.add_argument('--p_mid_point_mini', type=float, default=0.0)
-    hparams.add_argument('--p_pddm', type=float, default=0.0)
-    hparams.add_argument('--weight_decay', type=float, default=1.0)
-    hparams.add_argument('--pddm', type=float, default=1.0)
-    hparams.add_argument('--batch_norm', type=bool, default=False)
+    # hparams.add_argument('--normalization', type=str, default='none')
+    # hparams.add_argument('--loss_type', type=str, default='l2')
+    hparams.add_argument('--reweight_sample', type=bool, default=False, help='whether or not to reweight samples based on propensity score')
+    # hparams.add_argument('--rep_weight_decay', type=bool, default=True)
+    # hparams.add_argument('--dropout_rep', type=float, default=0.1)
+    # hparams.add_argument('--dropout_head', type=float, default=0.1)
+    # hparams.add_argument('--p_lambda', type=float, default=0.0)
+    # hparams.add_argument('--p_mid_point_mini', type=float, default=0.0)
+    # hparams.add_argument('--p_pddm', type=float, default=0.0)
+    # hparams.add_argument('--weight_decay', type=float, default=1.0)
+    # hparams.add_argument('--pddm', type=float, default=1.0)
+    hparams.add_argument('--batch_norm', type=bool, default=False, help='whether or not to use batch normalization')
+    hparams.add_argument('--varsel',type=bool, default=False,help='whether or not to use variable selection')
 
     hparams.add_argument('--model', type=str, default='ylearner')
-    hparams.add_argument('--device', type=str, default='cuda:1')
+    hparams.add_argument('--device', type=str, default='cuda:0')
     hparams.add_argument('--data', type=str, default='TEP')
     hparams.add_argument('--epoch', type=int, default=400)
-    hparams.add_argument('--seed', type=int, default=2)
+    hparams.add_argument('--seed', type=int, default=42)
     hparams.add_argument('--stop_epoch', type=int, default=30, help='tolerance epoch of early stopping')
     hparams.add_argument('--treat_weight', type=float, default=0.0, help='whether or not to balance sample')
+
 
     hparams.add_argument('--dim_backbone', type=str, default='60,60')
     hparams.add_argument('--dim_task', type=str, default='60,60')
@@ -266,16 +275,17 @@ if __name__ == "__main__":
     hparams.add_argument('--l2_reg', type=float, default=1e-4)
     hparams.add_argument('--dropout', type=float, default=0)
     hparams.add_argument('--treat_embed', type=bool, default=True)
-    hparams.add_argument('--ot', type=str, default='uot', help='ot, uot, lot, none')
+    # hparams.add_argument('--ot', type=str, default='uot', help='ot, uot, lot, none')
     hparams.add_argument('--lambda', type=float, default=1.0, help='weight of wass_loss in loss function')
-    hparams.add_argument('--ot_scale', type=float, default=0.1, help='weight of x distance. In IHDP, it should be set to 0.5-2.0 according to simulation conditions')
-    hparams.add_argument('--epsilon', type=float, default=1.0, help='Entropic Regularization in sinkhorn. In IHDP, it should be set to 0.5-5.0 according to simulation conditions')
-    hparams.add_argument('--kappa', type=float, default=1.0, help='weight of marginal constraint in UOT. In IHDP, it should be set to 0.1-5.0 according to simulation conditions')
-    hparams.add_argument('--gamma', type=float, default=0.0005, help='weight of joint distribution alignment. In IHDP, it should be set to 0.0001-0.005 according to simulation conditions')
-    hparams.add_argument('--ot_joint_bp', type=bool, default=True, help='weight of joint distribution alignment')
+    # hparams.add_argument('--ot_scale', type=float, default=0.1, help='weight of x distance. In IHDP, it should be set to 0.5-2.0 according to simulation conditions')
+    # hparams.add_argument('--epsilon', type=float, default=1.0, help='Entropic Regularization in sinkhorn. In IHDP, it should be set to 0.5-5.0 according to simulation conditions')
+    # hparams.add_argument('--kappa', type=float, default=1.0, help='weight of marginal constraint in UOT. In IHDP, it should be set to 0.1-5.0 according to simulation conditions')
+    # hparams.add_argument('--gamma', type=float, default=0.0005, help='weight of joint distribution alignment. In IHDP, it should be set to 0.0001-0.005 according to simulation conditions')
+    # hparams.add_argument('--ot_joint_bp', type=bool, default=True, help='weight of joint distribution alignment')
     hparams = vars(hparams.parse_args())
 
-    path = f"Resultsparam/{hparams['data']}/{hparams['model']}/{hparams['ot']}_{hparams['lambda']}_{hparams['epsilon']}_{hparams['kappa']}_{hparams['gamma']}_{hparams['batchSize']}_{hparams['treat_weight']}_{hparams['ot_scale']}_{hparams['seed']}"
+    # path = f"Resultsparam/{hparams['data']}/{hparams['model']}/{hparams['ot']}_{hparams['lambda']}_{hparams['epsilon']}_{hparams['kappa']}_{hparams['gamma']}_{hparams['batchSize']}_{hparams['treat_weight']}_{hparams['ot_scale']}_{hparams['seed']}"
+    path = f"Resultsparam/{hparams['data']}/{hparams['model']}/SITE_{hparams['lambda']}_{hparams['batchSize']}_{hparams['treat_weight']}_{hparams['seed']}" 
     writer = SummaryWriter(path)
     torch.manual_seed(hparams['seed'])
     if hasattr(os, 'nice'):

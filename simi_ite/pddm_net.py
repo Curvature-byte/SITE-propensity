@@ -4,8 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Dict, Optional
 from sklearn.preprocessing import StandardScaler
-import utils
-
+from simi_ite import utils
 
 class PDDMNetwork(nn.Module):
     """
@@ -70,7 +69,7 @@ def compute_pddm_loss(
     pred_s_jm = pddm_net(three_pairs[1], three_pairs[4]).squeeze()
     
     # 目标相似度
-    target_similarities= utils.get_three_pairs_similarity(similarity_ground, three_paris_index)
+    target_similarities= utils.get_three_pair_simi(similarity_ground, three_paris_index)
     
     target_similarities = torch.tensor(target_similarities, dtype=torch.float32)
 

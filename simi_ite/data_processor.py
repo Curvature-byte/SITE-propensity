@@ -1,11 +1,15 @@
 import kagglehub
-#import important liberies
 import pandas as pd
-import pyreadr
-import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.express as px
 import numpy as np
+import torch
+import pyreadr
+from collections import Counter
+from torch.utils.data.sampler import WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+from simi_ite.utils import StandardScaler
+
+
 
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 
@@ -51,14 +55,14 @@ class MyDataset(Dataset):
 def TEP_processor(random_state=1):
 
     # Download latest version
-    path = kagglehub.train_dataset_download("averkij/tennessee-eastman-process-simulation-train_dataset")
+    path = kagglehub.dataset_download("averkij/tennessee-eastman-process-simulation-dataset")
 
-    print("Path to train_dataset files:", path)
+    print("Path to dataset files:", path)
     # Load the Rtrain_Data file
-    result = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/train_datasets/averkij/tennessee-eastman-process-simulation-train_dataset/versions/1/TEP_FaultFree_Training.Rtrain_Data")
-    result1 = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/train_datasets/averkij/tennessee-eastman-process-simulation-train_dataset/versions/1/TEP_Faulty_Training.Rtrain_Data")
-    result2 = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/train_datasets/averkij/tennessee-eastman-process-simulation-train_dataset/versions/1/TEP_FaultFree_Testing.Rtrain_Data")
-    result3 = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/train_datasets/averkij/tennessee-eastman-process-simulation-train_dataset/versions/1/TEP_Faulty_Testing.Rtrain_Data")
+    result = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/datasets/averkij/tennessee-eastman-process-simulation-dataset/versions/1/TEP_FaultFree_Training.RData")
+    result1 = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/datasets/averkij/tennessee-eastman-process-simulation-dataset/versions/1/TEP_Faulty_Training.RData")
+    result2 = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/datasets/averkij/tennessee-eastman-process-simulation-dataset/versions/1/TEP_FaultFree_Testing.RData")
+    result3 = pyreadr.read_r("/home/jiangwei/.cache/kagglehub/datasets/averkij/tennessee-eastman-process-simulation-dataset/versions/1/TEP_Faulty_Testing.RData")
     # Extract the train_data frame
     df_normal_train = result['fault_free_training']
     df_fault_train = result1['faulty_training']

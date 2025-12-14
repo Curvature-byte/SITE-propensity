@@ -180,14 +180,14 @@ def _predict_tensor(model: nn.Module, features: np.ndarray, device: torch.device
     return np.vstack(outputs)[:, 0]
 
 
-def load_propensity_score(model_dir: str | Path, x: np.ndarray, input_dim: Optional[int] = None, mode: Mode = "logistic", **kwargs) -> np.ndarray:
+def load_propensity_score(model_dir: str | Path, input_dim: Optional[int] = None, mode: Mode = "logistic", **kwargs) -> np.ndarray:
     """Helper that mirrors the legacy ``load_propensity_score`` API."""
 
     directory = Path(model_dir)
     if input_dim is None:
         raise ValueError("input_dim must be provided to rebuild the network architecture")
     artifacts = PropensityArtifacts.load(directory, input_dim=input_dim, mode=mode, **kwargs)
-    return artifacts.predict_proba(x)
+    return artifacts
 
 
 if __name__ == "__main__":  # pragma: no cover
