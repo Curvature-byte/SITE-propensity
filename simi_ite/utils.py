@@ -176,9 +176,16 @@ def get_simi_ground(x, propensity_model):
     x_propensity_score = propensity_model.predict_proba(x)
     n_train = x.shape[0]
     s_similarity_matrix = np.ones([n_train, n_train])
-    for i in range(n_train):
-        for j in range(n_train):
-            s_similarity_matrix[i, j] = similarity_score(x_propensity_score[i], x_propensity_score[j])
+    if x_propensity_score.ndim == 1:
+        s = x_propensity_score.reshape(-1, 1)
+    else:
+        s = x_propensity_score
+    mid_matrix = (s + s.T) / 2.0
+    dis_matrix = np.abs(s - s.T) / 2.0
+    s_similarity_matrix = (1.5 * np.abs(mid_matrix - 0.5) - 2.0 * dis_matrix + 1.0) / 2.0
+    # for i in range(n_train):
+    #     for j in range(n_train):
+    #         s_similarity_matrix[i, j] = similarity_score(x_propensity_score[i], x_propensity_score[j])
     return x_propensity_score, s_similarity_matrix
 
 def find_nearest_point(x, p):#在数组 $x$ 中，找到与数值 $p$ 最接近的另一个点的索引
@@ -192,16 +199,23 @@ def find_nearest_point(x, p):#在数组 $x$ 中，找到与数值 $p$ 最接近�
     return I_diff
 
 def find_middle_pair(x, y):
-    min_val = np.abs(x[0]-0.5) + np.abs(y[0]-0.5)
-    index_1 = 0
-    index_2 = 0
-    for i in range(x.shape[0]):
-        for j in range(y.shape[0]):
-            value = np.abs(x[i]-0.5) + np.abs(y[j]-0.5)
-            if value < min_val:
-                min_val = value
-                index_1 = i
-                index_2 = j
+    # min_val = np.abs(x[0]-0.5) + np.abs(y[0]-0.5)
+    # index_1 = 0
+    # index_2 = 0
+    # for i in range(x.shape[0]):
+    #     for j in range(y.shape[0]):
+    #         value = np.abs(x[i]-0.5) + np.abs(y[j]-0.5)
+    #         if value < min_val:
+    #             min_val = value
+    #             index_1 = i
+    #             index_2 = j
+    index_1 = np.argmin(np.abs(x - 0.5))
+    index_2 = np.argmin(np.abs(y - 0.5))
+    # x_dev = np.abs(x - 0.5)[:, None]    # shape (n,1)
+    # y_dev = np.abs(y - 0.5)[None, :]    # shape (1,m)
+    # total_dev = x_dev + y_dev           # 广播得到 n×m
+    # idx = np.argmin(total_dev)
+    # index_1, index_2 = np.unravel_index(idx, total_dev.shape)
     return index_1, index_2
 
 def find_three_pairs(x, t, x_propensity_score):
